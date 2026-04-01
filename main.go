@@ -92,7 +92,7 @@ Please fix this issue.`, command, stderr, explanation)
 // Prints the agent's output to the terminal and exits when done.
 func runAgentOneShot(prompt string) error {
 	agent := getAgent()
-	cmd := exec.Command(agent, "-p", prompt)
+	cmd := exec.Command(agent, "-p", prompt, "--allowedTools", "Edit,Read,Write,Glob,Grep", "--permission-mode", "acceptEdits")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -102,7 +102,7 @@ func runAgentOneShot(prompt string) error {
 // The user gets a live session with the error context pre-loaded.
 func runAgentInteractive(prompt string) error {
 	agent := getAgent()
-	cmd := exec.Command(agent, "-p", prompt, "--continue")
+	cmd := exec.Command(agent, "-p", prompt, "--continue", "--allowedTools", "Edit,Read,Write,Glob,Grep", "--permission-mode", "acceptEdits")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
