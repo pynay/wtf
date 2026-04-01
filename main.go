@@ -2,7 +2,7 @@ package main
 
 // main.go — Entry point for the `wtf` CLI tool.
 // Orchestrates: API key → temp files → context → redact → prompt → stream.
-// With --fix flag, pipes the explanation into Claude Code to auto-fix.
+// With `fix` subcommand, pipes the explanation into Claude Code to auto-fix.
 
 import (
 	"fmt"
@@ -24,54 +24,94 @@ func readTmpFile(filename string) (string, error) {
 	return strings.TrimSpace(string(content)), nil
 }
 
-// hasFlag checks if a flag is present in os.Args.
-func hasFlag(flag string) bool {
+// hasArg checks if a positional argument is present in os.Args.
+func hasArg(name string) bool {
 	for _, arg := range os.Args[1:] {
-		if arg == flag {
+		if arg == name {
 			return true
 		}
 	}
 	return false
 }
 
-// runClaudeFix pipes the error context and explanation into Claude Code.
-//
-// TODO: Implement this function.
-//
-// HINTS:
-//   - exec.Command("claude", args...) creates a command to run
-//   - You can pass a prompt directly with: exec.Command("claude", "-p", prompt)
-//   - cmd.Stdin, cmd.Stdout, cmd.Stderr can be wired to os.Stdin/Stdout/Stderr
-//     so Claude Code runs interactively in the user's terminal
-//   - cmd.Run() executes the command and waits for it to finish
-//   - Build a prompt string that gives Claude Code the context it needs:
-//     the failed command, the error output, and the explanation from wtf
-//   - The prompt should tell Claude to fix the issue, not just explain it
-func runClaudeFix(command, stderr, explanation string) error {
-	// TODO: Build a prompt for Claude Code that includes:
-	//   - The failed command
-	//   - The error output
-	//   - The explanation from wtf
-	//   - An instruction to fix the issue
+// getFixMode reads the fix mode preference from ~/.config/wtf/fix_mode.
+// Returns "oneshot" (default) or "interactive".
+func getFixMode() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "oneshot"
+	}
+	configPath := filepath.Join(homeDir, ".config", "wtf", "fix_mode")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "oneshot"
+	}
+	mode := strings.TrimSpace(string(data))
+	if mode == "interactive" {
+		return "interactive"
+	}
+	return "oneshot"
+}
 
-	// TODO: Create the exec.Command with "claude" and "-p" flag
+// getAgent reads the preferred coding agent from ~/.config/wtf/agent.
+// Returns "claude" by default.
+func getAgent() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "claude"
+	}
+	configPath := filepath.Join(homeDir, ".config", "wtf", "agent")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return "claude"
+	}
+	agent := strings.TrimSpace(string(data))
+	if agent != "" {
+		return agent
+	}
+	return "claude"
+}
 
-	// TODO: Wire cmd.Stdout and cmd.Stderr to os.Stdout and os.Stderr
-	//   so the user sees Claude Code's output in real time
+// buildFixPrompt creates the prompt string sent to Claude Code.
+// Should include the failed command, stderr output, and wtf's explanation,
+// with an instruction to fix the issue.
+func buildFixPrompt(command, stderr, explanation string) string {
+	return fmt.Sprintf(`The following command failed:
+%s
 
-	// TODO: Run the command and return any error
+Error output:
+%s
 
-	_ = command
-	_ = stderr
-	_ = explanation
-	_ = exec.Command
+Explanation:
+%s
 
-	return nil
+Please fix this issue.`, command, stderr, explanation)
+}
+
+// runAgentOneShot runs the coding agent in non-interactive mode (agent -p "prompt").
+// Prints the agent's output to the terminal and exits when done.
+func runAgentOneShot(prompt string) error {
+	agent := getAgent()
+	cmd := exec.Command(agent, "-p", prompt)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runAgentInteractive launches the coding agent interactively with context.
+// The user gets a live session with the error context pre-loaded.
+func runAgentInteractive(prompt string) error {
+	agent := getAgent()
+	cmd := exec.Command(agent, "-p", prompt, "--continue")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func main() {
 	apiKey := getAPIKey()
-	fixMode := hasFlag("--fix")
+	fixMode := hasArg("fix")
 
 	lastCommand, err := readTmpFile("wtf_last_command")
 	if err != nil {
@@ -116,13 +156,20 @@ func main() {
 	}
 	fmt.Println("")
 
-	// If --fix flag is set, hand off to Claude Code to apply the fix
+	// If fix subcommand is set, hand off to Claude Code to apply the fix.
+	// Default: one-shot mode. With -i/--interactive: interactive session.
 	if fixMode {
-		fmt.Println("\nHanding off to Claude Code to fix...")
+		fmt.Printf("\nHanding off to %s to fix...\n", getAgent())
 		fmt.Println("")
-		err = runClaudeFix(lastCommand, redactedStderr, explanation)
+		prompt := buildFixPrompt(lastCommand, redactedStderr, explanation)
+
+		if getFixMode() == "interactive" {
+			err = runAgentInteractive(prompt)
+		} else {
+			err = runAgentOneShot(prompt)
+		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error running Claude Code: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error running coding agent: %v\n", err)
 			os.Exit(1)
 		}
 	}

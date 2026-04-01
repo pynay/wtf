@@ -2,16 +2,21 @@
 
 # setup.sh — Installs the `wtf` shell hook into your shell configuration.
 #
-# The hook runs after every command and captures:
-#   - The failed command text → ${TMPDIR:-/tmp}/wtf_last_command
-#   - The stderr output → ${TMPDIR:-/tmp}/wtf_last_stderr
+# Uses a preexec/precmd pattern to capture stderr on the original run:
+#   - preexec: runs BEFORE each command — redirects stderr to a temp file
+#     via file descriptor duplication, while still displaying it to the terminal
+#   - precmd: runs AFTER each command — if the command failed, saves the
+#     command text and keeps the captured stderr; otherwise cleans up
+#
+# Key concepts you'll need:
+#   - exec 3>&2        — duplicate fd 2 (stderr) to fd 3 (backup)
+#   - exec 2> >(tee file >&3)  — redirect stderr through tee: writes to
+#     both the file and the original stderr (fd 3), so the user still sees errors
+#   - exec 2>&3 3>&-   — restore stderr from backup, close fd 3
+#   - $? in precmd/PROMPT_COMMAND gives the exit code of the last command
 #
 # Supports: bash (~/.bashrc) and zsh (~/.zshrc)
 # Idempotent: won't add the hook twice if already installed.
-#
-# NOTE (v1 limitation): This approach re-runs the failed command to capture
-# stderr. Side-effecting commands (rm, curl POST) will run twice.
-# A v2 could use `script` or fd redirection to capture stderr on first run.
 
 set -e
 
@@ -57,19 +62,50 @@ if [[ "$CURRENT_SHELL" == "zsh" ]]; then
 
 # >>> wtf shell hook >>>
 # Captures failed commands and their stderr for the `wtf` CLI tool.
-# NOTE: Re-runs the failed command to capture stderr (v1 limitation).
-__wtf_capture() {
-    local last_exit=$?
-    local tmp_dir="${TMPDIR:-/tmp}"
+# Uses preexec/precmd to capture stderr on the original run — no re-execution.
+# Temp files are namespaced by shell PID to avoid concurrent shell conflicts.
 
-    if [[ $last_exit -ne 0 ]]; then
-        local last_cmd
-        last_cmd=$(fc -ln -1 | sed 's/^[[:space:]]*//')
-        echo "$last_cmd" > "${tmp_dir}/wtf_last_command"
-        eval "$last_cmd" 2>&1 >/dev/null > "${tmp_dir}/wtf_last_stderr" 2>&1 || true
+__wtf_tmp_dir="${TMPDIR:-/tmp}"
+__wtf_last_cmd=""
+__wtf_stderr_file="$__wtf_tmp_dir/wtf_last_stderr.$$"
+__wtf_cmd_file="$__wtf_tmp_dir/wtf_last_command.$$"
+# Symlinks point to the most recent session's files so `wtf` can find them.
+__wtf_stderr_link="$__wtf_tmp_dir/wtf_last_stderr"
+__wtf_cmd_link="$__wtf_tmp_dir/wtf_last_command"
+
+# preexec runs BEFORE each command.
+# $1 in zsh preexec gives the full command line (handles multi-line and pipes).
+__wtf_preexec() {
+    __wtf_last_cmd="$1"
+    exec 3>&2
+    exec 2> >(tee "$__wtf_stderr_file" >&3)
+}
+
+# precmd runs AFTER each command.
+__wtf_postcmd() {
+    local last_exit=$?
+    exec 2>&3 3>&-
+
+    if [[ $last_exit -ne 0 && -n "$__wtf_last_cmd" ]]; then
+        echo "$__wtf_last_cmd" > "$__wtf_cmd_file"
+        ln -sf "$__wtf_stderr_file" "$__wtf_stderr_link"
+        ln -sf "$__wtf_cmd_file" "$__wtf_cmd_link"
+    else
+        rm -f "$__wtf_stderr_file"
     fi
 }
-precmd_functions+=(__wtf_capture)
+
+# Clean up PID-namespaced files on shell exit.
+__wtf_cleanup() {
+    rm -f "$__wtf_stderr_file" "$__wtf_cmd_file"
+    # Only remove symlinks if they point to our files.
+    [[ "$(readlink "$__wtf_stderr_link" 2>/dev/null)" == "$__wtf_stderr_file" ]] && rm -f "$__wtf_stderr_link"
+    [[ "$(readlink "$__wtf_cmd_link" 2>/dev/null)" == "$__wtf_cmd_file" ]] && rm -f "$__wtf_cmd_link"
+}
+trap __wtf_cleanup EXIT
+
+preexec_functions+=(__wtf_preexec)
+precmd_functions+=(__wtf_postcmd)
 # <<< wtf shell hook <<<
 HOOK
 
@@ -78,19 +114,59 @@ elif [[ "$CURRENT_SHELL" == "bash" ]]; then
 
 # >>> wtf shell hook >>>
 # Captures failed commands and their stderr for the `wtf` CLI tool.
-# NOTE: Re-runs the failed command to capture stderr (v1 limitation).
-__wtf_capture() {
-    local last_exit=$?
-    local tmp_dir="${TMPDIR:-/tmp}"
+# Uses DEBUG trap (preexec) + PROMPT_COMMAND (precmd) — no re-execution.
+# Temp files are namespaced by shell PID to avoid concurrent shell conflicts.
 
-    if [[ $last_exit -ne 0 ]]; then
-        local last_cmd
-        last_cmd=$(history 1 | sed 's/^[[:space:]]*[0-9]*[[:space:]]*//')
-        echo "$last_cmd" > "${tmp_dir}/wtf_last_command"
-        eval "$last_cmd" 2>&1 >/dev/null > "${tmp_dir}/wtf_last_stderr" 2>&1 || true
-    fi
+__wtf_tmp_dir="${TMPDIR:-/tmp}"
+__wtf_last_cmd=""
+__wtf_active=0
+__wtf_captured=0
+__wtf_stderr_file="$__wtf_tmp_dir/wtf_last_stderr.$$"
+__wtf_cmd_file="$__wtf_tmp_dir/wtf_last_command.$$"
+__wtf_stderr_link="$__wtf_tmp_dir/wtf_last_stderr"
+__wtf_cmd_link="$__wtf_tmp_dir/wtf_last_command"
+
+# DEBUG trap runs BEFORE each command (bash's preexec equivalent).
+# Guards:
+#   - __wtf_active: prevents firing during PROMPT_COMMAND
+#   - __wtf_captured: only captures the first simple command per prompt cycle,
+#     so compound commands (if/for/pipes) don't overwrite __wtf_last_cmd
+__wtf_preexec() {
+    [[ $__wtf_active -eq 1 ]] && return
+    [[ $__wtf_captured -eq 1 ]] && return
+    __wtf_last_cmd="$BASH_COMMAND"
+    __wtf_captured=1
+    exec 3>&2
+    exec 2> >(tee "$__wtf_stderr_file" >&3)
 }
-PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;} __wtf_capture"
+
+# PROMPT_COMMAND runs AFTER each command (bash's precmd equivalent).
+__wtf_postcmd() {
+    local last_exit=$?
+    __wtf_active=1
+    exec 2>&3 3>&- 2>/dev/null
+
+    if [[ $last_exit -ne 0 && -n "$__wtf_last_cmd" ]]; then
+        echo "$__wtf_last_cmd" > "$__wtf_cmd_file"
+        ln -sf "$__wtf_stderr_file" "$__wtf_stderr_link"
+        ln -sf "$__wtf_cmd_file" "$__wtf_cmd_link"
+    else
+        rm -f "$__wtf_stderr_file"
+    fi
+    __wtf_active=0
+    __wtf_captured=0
+}
+
+# Clean up PID-namespaced files on shell exit.
+__wtf_cleanup() {
+    rm -f "$__wtf_stderr_file" "$__wtf_cmd_file"
+    [[ "$(readlink "$__wtf_stderr_link" 2>/dev/null)" == "$__wtf_stderr_file" ]] && rm -f "$__wtf_stderr_link"
+    [[ "$(readlink "$__wtf_cmd_link" 2>/dev/null)" == "$__wtf_cmd_file" ]] && rm -f "$__wtf_cmd_link"
+}
+trap __wtf_cleanup EXIT
+
+trap '__wtf_preexec' DEBUG
+PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;} __wtf_postcmd"
 # <<< wtf shell hook <<<
 HOOK
 
@@ -101,6 +177,52 @@ echo "wtf shell hook installed successfully!"
 echo ""
 echo "To activate, restart your terminal or run:"
 echo "  source $SHELL_RC"
+
+# --- Agent configuration ---
+echo ""
+echo "--- Coding Agent Setup ---"
+echo ""
+echo "Which coding agent should 'wtf fix' use?"
+echo ""
+echo "  1) claude  — Claude Code (default)"
+echo "  2) codex   — OpenAI Codex CLI"
+echo "  3) custom  — enter a custom command"
+echo ""
+read -rp "Choose [1/2/3] (default: 1): " agent_choice
+
+agent="claude"
+if [[ "$agent_choice" == "2" || "$agent_choice" == "codex" ]]; then
+    agent="codex"
+elif [[ "$agent_choice" == "3" || "$agent_choice" == "custom" ]]; then
+    read -rp "Enter the command name: " agent
+fi
+
+mkdir -p "$HOME/.config/wtf"
+echo "$agent" > "$HOME/.config/wtf/agent"
+echo "Coding agent set to: $agent"
+echo "You can change this later by editing ~/.config/wtf/agent"
+
+# --- Fix mode configuration ---
+echo ""
+echo "--- Fix Mode Setup ---"
+echo ""
+echo "When you run 'wtf fix', how should the agent run?"
+echo ""
+echo "  1) oneshot     — agent fixes the issue and exits (default)"
+echo "  2) interactive — agent opens a live session with the error context"
+echo ""
+read -rp "Choose [1/2] (default: 1): " fix_choice
+
+fix_mode="oneshot"
+if [[ "$fix_choice" == "2" || "$fix_choice" == "interactive" ]]; then
+    fix_mode="interactive"
+fi
+
+echo "$fix_mode" > "$HOME/.config/wtf/fix_mode"
+echo "Fix mode set to: $fix_mode"
+echo "You can change this later by editing ~/.config/wtf/fix_mode"
+
+# --- API key configuration ---
 echo ""
 echo "--- API Key Setup ---"
 echo ""
