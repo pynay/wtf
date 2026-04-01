@@ -58,8 +58,6 @@ echo 'your-api-key' > ~/.config/wtf/api_key
 
 ```bash
 export OPENAI_API_KEY=your-key-here
-# or
-export ANTHROPIC_API_KEY=your-key-here
 ```
 
 ### 4. Configure fix mode
@@ -99,7 +97,7 @@ All configuration lives in `~/.config/wtf/`:
 
 | File | Purpose |
 |------|---------|
-| `api_key` | Your LLM API key (OpenAI or Anthropic) |
+| `api_key` | Your OpenAI API key |
 | `fix_mode` | `oneshot` or `interactive` |
 | `agent` | Coding agent CLI command (default: `claude`) |
 
@@ -126,5 +124,5 @@ The agent must have a CLI that accepts:
 
 - Go 1.21+
 - bash or zsh
-- An OpenAI or Anthropic API key
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (for `wtf fix`)
+- An OpenAI API key
+- A coding agent CLI like [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or Codex (for `wtf fix`)

@@ -24,7 +24,7 @@ const (
 // Prints setup instructions and exits if no key is found.
 func getAPIKey() string {
 	// Check env vars that developers commonly have set
-	envVars := []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}
+	envVars := []string{"OPENAI_API_KEY"}
 	for _, name := range envVars {
 		key := os.Getenv(name)
 		if key != "" {
@@ -48,7 +48,6 @@ func getAPIKey() string {
 	fmt.Fprintln(os.Stderr, "No API key found. Set one of these environment variables:")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  export OPENAI_API_KEY=your-key-here")
-	fmt.Fprintln(os.Stderr, "  export ANTHROPIC_API_KEY=your-key-here")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Or use a config file:")
 	fmt.Fprintln(os.Stderr, "  mkdir -p ~/.config/wtf")
