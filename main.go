@@ -99,14 +99,25 @@ func runAgentOneShot(prompt string) error {
 }
 
 // runAgentInteractive launches the coding agent interactively with context.
-// The user gets a live session with the error context pre-loaded.
+// First sends the error context in a non-interactive oneshot call, then
+// resumes that conversation interactively so the user can follow up.
 func runAgentInteractive(prompt string) error {
 	agent := getAgent()
-	cmd := exec.Command(agent, "-p", prompt, "--continue", "--allowedTools", "Edit,Read,Write,Glob,Grep", "--permission-mode", "acceptEdits")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+
+	// Step 1: send the full error context non-interactively.
+	oneshot := exec.Command(agent, "-p", prompt, "--allowedTools", "Edit,Read,Write,Glob,Grep", "--permission-mode", "acceptEdits")
+	oneshot.Stdout = os.Stdout
+	oneshot.Stderr = os.Stderr
+	if err := oneshot.Run(); err != nil {
+		return err
+	}
+
+	// Step 2: resume the same conversation interactively.
+	interactive := exec.Command(agent, "--continue", "--allowedTools", "Edit,Read,Write,Glob,Grep", "--permission-mode", "acceptEdits")
+	interactive.Stdin = os.Stdin
+	interactive.Stdout = os.Stdout
+	interactive.Stderr = os.Stderr
+	return interactive.Run()
 }
 
 func main() {
